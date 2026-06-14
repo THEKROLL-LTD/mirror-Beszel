@@ -12,3 +12,32 @@
 #
 # Leave this file empty (except for comments) until you actually need a waiver.
 # A waiver without a reason is just a mute button, not evidence.
+
+# -----------------------------------------------------------------------------
+# CVE-2026-4800 — lodash _.template code injection / prototype pollution.
+#   lodash < 4.18.0, fixed in 4.18.0. GHSA-r5fr-rjxr-66jc. The CVE-2021-23337
+#   fix validated the `variable` option of _.template but not the
+#   `options.imports` key names; an attacker who controls those keys can
+#   inject code.
+#
+# Where it surfaces: a transitive npm dependency of the hub frontend
+#   (internal/site, bun.lock / package-lock.json). Flagged by the Trivy *fs*
+#   scan of the cloned source, NOT the image scan — the runtime image is
+#   scratch + Go binary with the frontend embedded as minified client-side
+#   JS, so there is no lodash lockfile/package in the published image.
+#
+# Why waived, not fixed:
+#   1. Mirror policy. We do not override upstream's lockfiles — bumping lodash
+#      is henrygd's call. Pinning a different version here would diverge our
+#      build from upstream behaviour, which is out of scope for a mirror.
+#      (Same stance as the mirror-uptime-kuma npm-layer waivers.)
+#   2. Sink not reached in a server-exploitable way. lodash here is bundled
+#      client-side frontend code; the _.template imports-key sink requires the
+#      application to call _.template with attacker-controlled `imports` keys,
+#      which is not how the Beszel dashboard uses it. Not a server-side RCE in
+#      the hub.
+#
+# Action: this waiver exists to unblock the initial mirror build. Revisit
+# 2026-09-14, or sooner when upstream bumps lodash to >= 4.18.0 (at which
+# point this line should be removed and the finding will clear on its own).
+CVE-2026-4800
