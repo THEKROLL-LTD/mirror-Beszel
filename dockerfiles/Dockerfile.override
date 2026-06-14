@@ -1,0 +1,123 @@
+# Dockerfile.override for henrygd/beszel — HUB image only
+# -----------------------------------------------------------------------------
+# Self-contained rebuild of the Beszel hub (the dashboard server). Replaces
+# the upstream Dockerfile during the CI build (context = the cloned upstream
+# repo root).
+#
+# Why this override exists at all
+# -------------------------------
+# Beszel's hub is already a `scratch` image (one static Go binary + CA certs),
+# so the usual override levers — slimming a fat base, patching apt/apk CVEs,
+# avoiding an opaque prebuilt base — DO NOT APPLY. The single material reason
+# to rebuild rather than re-publish henrygd's image is the Go toolchain:
+# rebuilding nightly from source on a pinned-current Go lets a Go-stdlib
+# security release (TLS / x509 / net/http DoS classes) remediate on Go's
+# cadence instead of waiting for henrygd to cut a new Beszel release. We also
+# build only from the source at a tag, not from henrygd's published bytes.
+#
+# The frontend-embed problem this override solves
+# -----------------------------------------------
+# `internal/dockerfile_hub` upstream builds ONLY the Go binary. The web UI is
+# built OUTSIDE the Dockerfile by upstream CI (`bun run build` on the runner →
+# `internal/site/dist`) and pulled into the binary via `//go:embed all:dist`
+# (see internal/site/embed.go). `dist/` is git-ignored and never committed, so
+# a naive `git clone` + `docker build` of the upstream Dockerfile fails to
+# compile (embed of a non-existent directory). Our pipeline only clones and
+# builds — no host-side bun step — so this override does the bun build itself
+# in a first stage. The result is MORE hermetic than upstream: the frontend
+# toolchain is pinned by digest, not floating on the runner.
+#
+# Differences from upstream internal/dockerfile_hub:
+#   - Frontend is built in-image (stage 1) instead of on the CI runner.
+#   - All base images pinned by digest (Renovate keeps them current).
+#   - Go toolchain pinned to the 1.26 line by digest (currently 1.26.4) —
+#     this is the load-bearing hardening lever for a scratch+Go image. The
+#     `1.26-alpine` tag (not an exact patch) lets Renovate flow each Go patch
+#     release in via a digest bump, so stdlib CVEs remediate on Go's cadence.
+#   - `-trimpath` + `-buildvcs=false` for reproducibility (the cloned context
+#     carries no .git anyway; .dockerignore excludes it).
+#   - Fixes upstream's `COPY ../go.mod ../go.sum` (context-relative `..` is
+#     invalid for a root-context build) → `COPY go.mod go.sum ./`.
+#   - Drops `unzip` from the builder (vestigial — the hub build never uses it).
+#   - Adds OCI image labels.
+#
+# Not changed (so deployments are drop-in vs. henrygd/beszel):
+#   - Runtime is still `scratch`, runs as root (UID 0). Beszel/PocketBase
+#     writes to /beszel_data; switching to a non-root UID would require the
+#     mounted volume to be chown'd and would break existing deployments.
+#     Left as a documented, opt-in hardening step in the README.
+#   - Same ENTRYPOINT/CMD, same EXPOSE 8090, same VOLUME /beszel_data.
+#
+# Note: VERSION is injected by the CI workflow via --build-arg. Beszel stamps
+# its version from a source constant (beszel.Version), which already equals the
+# build tag, and the module is v0.x (no /vN module-path problem like Gokapi) —
+# so VERSION is used only for the OCI label, not for linker injection.
+
+# --- Stage 1: frontend (bun) -------------------------------------------------
+FROM oven/bun:1.2-alpine@sha256:0841c588f6304300baf1d395ae339ce09a6e18c4b6a7cdd4fddcbdb87a2f096a AS frontend
+
+WORKDIR /site
+
+# Only the site sources are needed here; bun regenerates node_modules.
+# (.dockerignore already strips node_modules/dist from the context.)
+COPY internal/site/ ./
+
+# Reproducible install from the committed lockfile, then the upstream build
+# script (`lingui extract --overwrite && lingui compile && vite build`),
+# which emits the embeddable bundle to /site/dist.
+RUN bun install --frozen-lockfile
+RUN bun run build
+
+# --- Stage 2: Go builder -----------------------------------------------------
+FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS builder
+
+WORKDIR /app
+
+# CA certificates are copied into the scratch runtime so the hub can make
+# outbound TLS calls (update checks, webhook/shoutrrr notifications).
+RUN apk add --no-cache ca-certificates && update-ca-certificates
+
+# Module cache layer — cached unless go.mod/go.sum change.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Full source, then drop the freshly-built frontend into the path that
+# internal/site/embed.go embeds (`//go:embed all:dist`).
+COPY . ./
+COPY --from=frontend /site/dist ./internal/site/dist
+
+ARG VERSION
+ARG TARGETOS
+ARG TARGETARCH
+
+# CGO disabled → fully static binary (scratch-compatible). Flags mirror
+# upstream (-w -s, GOGC=75) plus -trimpath/-buildvcs=false for reproducibility.
+RUN CGO_ENABLED=0 GOGC=75 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=false -ldflags "-w -s" \
+      -o /beszel ./internal/cmd/hub
+
+# --- Stage 3: runtime (scratch) ----------------------------------------------
+FROM scratch
+
+ARG VERSION
+
+LABEL org.opencontainers.image.title="beszel (hub)" \
+      org.opencontainers.image.description="THEKROLL hardened mirror build of the Beszel hub (dashboard server). Rebuilt from source on a pinned, current Go toolchain; scanned and digest-pinned by oss-mirror-build." \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.source="https://github.com/henrygd/beszel" \
+      org.opencontainers.image.url="https://github.com/THEKROLL-LTD/mirror-Beszel" \
+      org.opencontainers.image.vendor="THEKROLL LTD" \
+      org.opencontainers.image.licenses="MIT" \
+      ltd.thekroll.mirror.upstream="henrygd/beszel" \
+      ltd.thekroll.mirror.build-system="https://github.com/THEKROLL-LTD/oss-mirror-build"
+
+COPY --from=builder /beszel /
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Ensure data persistence across container recreations.
+VOLUME ["/beszel_data"]
+
+EXPOSE 8090
+
+ENTRYPOINT [ "/beszel" ]
+CMD ["serve", "--http=0.0.0.0:8090"]
