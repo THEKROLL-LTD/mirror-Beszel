@@ -30,10 +30,16 @@
 # Differences from upstream internal/dockerfile_hub:
 #   - Frontend is built in-image (stage 1) instead of on the CI runner.
 #   - All base images pinned by digest (Renovate keeps them current).
-#   - Go toolchain pinned to the 1.26 line by digest (currently 1.26.4) —
+#   - Go toolchain pinned to the 1.27 line by digest (currently 1.27.1) —
 #     this is the load-bearing hardening lever for a scratch+Go image. The
-#     `1.26-alpine` tag (not an exact patch) lets Renovate flow each Go patch
+#     `1.27-alpine` tag (not an exact patch) lets Renovate flow each Go patch
 #     release in via a digest bump, so stdlib CVEs remediate on Go's cadence.
+#     The major line is NOT Renovate's call: the official golang images set
+#     `GOTOOLCHAIN=local`, so the pinned line must be >= the `go` directive in
+#     upstream's go.mod or the build fails outright rather than silently
+#     downloading a toolchain. v0.19.0 moved that directive to `go 1.27.1`,
+#     which is why this pin went 1.26 -> 1.27. Re-check it on every upstream
+#     minor bump.
 #   - `-trimpath` + `-buildvcs=false` for reproducibility (the cloned context
 #     carries no .git anyway; .dockerignore excludes it).
 #   - Fixes upstream's `COPY ../go.mod ../go.sum` (context-relative `..` is
@@ -69,7 +75,7 @@ RUN bun install --frozen-lockfile
 RUN bun run build
 
 # --- Stage 2: Go builder -----------------------------------------------------
-FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS builder
+FROM golang:1.27-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
 
 WORKDIR /app
 
