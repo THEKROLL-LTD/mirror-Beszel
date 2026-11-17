@@ -14,83 +14,25 @@
 # A waiver without a reason is just a mute button, not evidence.
 
 # -----------------------------------------------------------------------------
-# CVE-2026-4800 — lodash _.template code injection / prototype pollution.
-#   lodash < 4.18.0, fixed in 4.18.0. GHSA-r5fr-rjxr-66jc. The CVE-2021-23337
-#   fix validated the `variable` option of _.template but not the
-#   `options.imports` key names; an attacker who controls those keys can
-#   inject code.
+# Reviewed 2026-11-17 for henrygd/beszel v0.21.2 (supersedes the v0.19.0 set,
+# CVE issue #9). Default revisit: 2027-01-17.
 #
-# Where it surfaces: a transitive npm dependency of the hub frontend
-#   (internal/site, bun.lock / package-lock.json). Flagged by the Trivy *fs*
-#   scan of the cloned source, NOT the image scan — the runtime image is
-#   scratch + Go binary with the frontend embedded as minified client-side
-#   JS, so there is no lodash lockfile/package in the published image.
+# Deployment assumptions any future waiver here relies on:
+#   - Image is the hub only: `scratch` + one static Go binary + CA certs.
+#     No shell, no package manager, no JS runtime, no node_modules.
+#   - Frontend JS exists only in the throwaway bun builder stage and ships as
+#     minified assets embedded via go:embed.
 #
-# Why waived, not fixed:
-#   1. Mirror policy. We do not override upstream's lockfiles — bumping lodash
-#      is henrygd's call. Pinning a different version here would diverge our
-#      build from upstream behaviour, which is out of scope for a mirror.
-#      (Same stance as the mirror-uptime-kuma npm-layer waivers.)
-#   2. Sink not reached in a server-exploitable way. lodash here is bundled
-#      client-side frontend code; the _.template imports-key sink requires the
-#      application to call _.template with attacker-controlled `imports` keys,
-#      which is not how the Beszel dashboard uses it. Not a server-side RCE in
-#      the hub.
-#
-# Action: renewed at v0.19.0 — still 4.17.21 in internal/site/bun.lock, so the
-# finding stands. Note upstream is mid-migration between lockfiles: at v0.19.0
-# internal/site/package-lock.json already carries lodash 4.18.1 (fixed) while
-# bun.lock — the lockfile our frontend stage actually installs from
-# (`bun install --frozen-lockfile`) — still resolves 4.17.21. Regenerating
-# bun.lock is henrygd's call and will clear this on its own. Revisit 2026-12-01.
-CVE-2026-4800
-
-# -----------------------------------------------------------------------------
-# Build-stage frontend tooling — js-yaml and browserslist.
-#
-#   CVE-2026-59869      js-yaml 4.1.1  → 4.3.0   Quadratic CPU parsing merge-key
-#                                                chains. DoS.
-#   GHSA-5p4m-2wfm-xmqj js-yaml 4.1.1  → 4.3.1   O(n²) `!!omap` key-uniqueness
-#                                                scan in resolveYamlOmap(). DoS.
-#                                                (CVE-2026-59870 fix, not
-#                                                backported to the 4.1.x line.)
-#   CVE-2026-73088      browserslist 4.25.1 → 4.28.7  normalizeStats() walks
-#                                                untrusted stats data with an
-#                                                unguarded for..in → prototype
-#                                                pollution / uncaught TypeError.
-#   CVE-2026-73089      browserslist 4.25.1 → 4.28.7  Unbounded query/AST cache,
-#                                                no TTL or eviction → linear
-#                                                memory growth → OOM.
-#
-# Where they surface: the Trivy *fs* scan of the cloned upstream source
-#   (internal/site/package-lock.json and bun.lock). Both are transitive
-#   build-time tooling — js-yaml via cosmiconfig (config-file loader),
-#   browserslist via @babel/helper-compilation-targets and
-#   update-browserslist-db.
-#
-# Why waived, not fixed:
-#   1. Not present in the published image. The runtime is `scratch` + one
-#      static Go binary + CA certs. There is no JS runtime, no node_modules
-#      and no lockfile in the image — the frontend ships as minified assets
-#      embedded in the binary via `go:embed`. These packages exist only inside
-#      the throwaway bun builder stage. The image scan does not and cannot
-#      flag them; only the source scan sees them.
-#   2. No attacker-controlled input at the sink. All four require input the
-#      attacker influences — untrusted YAML for js-yaml, and
-#      browserslist-stats.json / opts.stats / repeated query values for
-#      browserslist. In our pipeline these tools read only upstream's own
-#      committed config inside a hermetic CI build of a pinned tag. The worst
-#      realistic case is a DoS against our own build job — an availability
-#      issue for the mirror, not a property of the artifact we publish.
-#   3. Mirror policy. We do not override upstream's lockfiles; bumping these
-#      is henrygd's call. Pinning different versions here would diverge our
-#      build from upstream behaviour, which is out of scope for a mirror.
-#      (Same stance as the mirror-uptime-kuma npm-layer waivers.)
-#
-# Action: revisit 2026-12-01, or sooner when upstream regenerates the frontend
-# lockfiles — at which point these lines should be removed and the findings
-# will clear on their own.
-CVE-2026-59869
-GHSA-5p4m-2wfm-xmqj
-CVE-2026-73088
-CVE-2026-73089
+# Current state: NO waivers. All previous entries were removed because they
+# no longer match any finding at v0.21.2 (Trivy v0.70.0, as pinned by
+# trivy-action v0.36.0, and v0.76.2 both report 0 CRITICAL/HIGH fixable):
+#   - CVE-2026-4800 (lodash): bun.lock now resolves lodash 4.18.1 (fixed).
+#   - CVE-2026-59869, GHSA-5p4m-2wfm-xmqj (js-yaml), CVE-2026-73088,
+#     CVE-2026-73089 (browserslist): these were reported from
+#     internal/site/package-lock.json, which now carries js-yaml 4.3.2 and
+#     browserslist 4.29.3 (fixed). bun.lock still lists the old versions as
+#     dev-only build tooling, which Trivy does not report without
+#     --include-dev-deps (pipeline default does not set it).
+# The v0.19.0 image findings (Go stdlib, golang.org/x/net) are fixed by the
+# Go 1.27.4 bump in dockerfiles/Dockerfile.override and upstream's x/net
+# v0.62.0, not waived.

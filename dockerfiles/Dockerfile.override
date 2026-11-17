@@ -30,7 +30,7 @@
 # Differences from upstream internal/dockerfile_hub:
 #   - Frontend is built in-image (stage 1) instead of on the CI runner.
 #   - All base images pinned by digest (Renovate keeps them current).
-#   - Go toolchain pinned to the 1.27 line by digest (currently 1.27.1) —
+#   - Go toolchain pinned to the 1.27 line by digest (currently 1.27.4) —
 #     this is the load-bearing hardening lever for a scratch+Go image. The
 #     `1.27-alpine` tag (not an exact patch) lets Renovate flow each Go patch
 #     release in via a digest bump, so stdlib CVEs remediate on Go's cadence.
@@ -38,8 +38,11 @@
 #     `GOTOOLCHAIN=local`, so the pinned line must be >= the `go` directive in
 #     upstream's go.mod or the build fails outright rather than silently
 #     downloading a toolchain. v0.19.0 moved that directive to `go 1.27.1`,
-#     which is why this pin went 1.26 -> 1.27. Re-check it on every upstream
-#     minor bump.
+#     which is why this pin went 1.26 -> 1.27 (v0.21.2: `go 1.27.3`). Re-check
+#     it on every upstream minor bump.
+#   - Bun pinned to the 1.4 line by digest. Same rule as Go: the line must be
+#     able to read upstream's internal/site/bun.lock, so it is NOT Renovate's
+#     call either.
 #   - `-trimpath` + `-buildvcs=false` for reproducibility (the cloned context
 #     carries no .git anyway; .dockerignore excludes it).
 #   - Fixes upstream's `COPY ../go.mod ../go.sum` (context-relative `..` is
@@ -58,9 +61,30 @@
 # its version from a source constant (beszel.Version), which already equals the
 # build tag, and the module is v0.x (no /vN module-path problem like Gokapi) —
 # so VERSION is used only for the OCI label, not for linker injection.
+#
+# 2026-11-17 — update v0.19.0 -> v0.21.2 (issues #9, #7, #8, #10)
+# -----------------------------------------------------------------------------
+#   - golang 1.27.1 -> 1.27.4 (digest bump, latest 1.27 patch). Clears the
+#     stdlib findings from the v0.19.0 rescan (#9): CVE-2026-111943,
+#     CVE-2026-78667, CVE-2026-78669, CVE-2026-97031. Bump, not waiver: the
+#     toolchain is ours. Also required: upstream go.mod is now `go 1.27.3`
+#     and GOTOOLCHAIN=local would refuse 1.27.1. golang.org/x/net
+#     (CVE-2026-78669) is fixed by upstream's own go.mod (v0.62.0).
+#   - oven/bun 1.2 -> 1.4 (1.4.4). Upstream regenerated bun.lock as
+#     lockfileVersion 3; bun 1.2.23 and 1.3.14 both fail
+#     `bun install --frozen-lockfile` with UnknownLockfileVersion, 1.4.4
+#     installs and builds cleanly. Upstream CI uses setup-bun@v2 (latest).
+#   - Override drift (internal/dockerfile_hub): upstream added GOARM handling
+#     from TARGETVARIANT and dropped GOGC=75. Both mirrored below. GOARM is a
+#     no-op for our linux/amd64 build but keeps the override drop-in.
+#   - internal/site/package.json build script now runs `tsc -b` before
+#     `vite build`. Picked up automatically via `bun run build`.
+#   - .github/workflows/docker-images.yml: registry/matrix restructuring only
+#     (registry prefix moved out of the matrix). Hub still builds from
+#     ./internal/dockerfile_hub with context ./, no new build-args. No action.
 
 # --- Stage 1: frontend (bun) -------------------------------------------------
-FROM oven/bun:1.2-alpine@sha256:0841c588f6304300baf1d395ae339ce09a6e18c4b6a7cdd4fddcbdb87a2f096a AS frontend
+FROM oven/bun:1.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a AS frontend
 
 WORKDIR /site
 
@@ -69,13 +93,13 @@ WORKDIR /site
 COPY internal/site/ ./
 
 # Reproducible install from the committed lockfile, then the upstream build
-# script (`lingui extract --overwrite && lingui compile && vite build`),
+# script (`lingui extract --overwrite && lingui compile && tsc -b && vite build`),
 # which emits the embeddable bundle to /site/dist.
 RUN bun install --frozen-lockfile
 RUN bun run build
 
 # --- Stage 2: Go builder -----------------------------------------------------
-FROM golang:1.27-alpine@sha256:cf6fca6641884b8433441b2b0652976f975e1d0fdd26d177eaaf8596087f3125 AS builder
+FROM golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280 AS builder
 
 WORKDIR /app
 
@@ -95,10 +119,15 @@ COPY --from=frontend /site/dist ./internal/site/dist
 ARG VERSION
 ARG TARGETOS
 ARG TARGETARCH
+ARG TARGETVARIANT
 
 # CGO disabled → fully static binary (scratch-compatible). Flags mirror
-# upstream (-w -s, GOGC=75) plus -trimpath/-buildvcs=false for reproducibility.
-RUN CGO_ENABLED=0 GOGC=75 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+# upstream (-w -s, GOARM from TARGETVARIANT) plus -trimpath/-buildvcs=false
+# for reproducibility.
+RUN if [ "$TARGETARCH" = "arm" ] && [ -n "$TARGETVARIANT" ]; then \
+      export GOARM="${TARGETVARIANT#v}"; \
+    fi; \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath -buildvcs=false -ldflags "-w -s" \
       -o /beszel ./internal/cmd/hub
 
